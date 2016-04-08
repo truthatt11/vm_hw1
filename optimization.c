@@ -21,8 +21,9 @@ list_t *shadow_hash_list;
 static inline void shack_init(CPUState *env)
 {
     env->shack = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
-    env->shack_hash_list;
-    env->shack_ret_addr;
+    env->shadow_ret_addr = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
+    env->shadow_hash_list;
+    env->shadow_ret_addr;
     env->shack_top = env->shack;
     env->shack_end = env->shack[SHACK_SIZE-1];
 }
@@ -63,6 +64,7 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
  * Indirect Branch Target Cache
  */
 __thread int update_ibtc;
+struct ibtc_table *ibtcTable;
 
 /*
  * helper_lookup_ibtc()
@@ -71,6 +73,10 @@ __thread int update_ibtc;
  */
 void *helper_lookup_ibtc(target_ulong guest_eip)
 {
+    update_ibtc = guest_eip & IBTC_CACHE_MASK;
+    if(ibtcTable->htable[update_ibtc].guest_eip == guest_eip)
+        return ibtcTable->htable[update_ibtc].tb;
+
     return optimization_ret_addr;
 }
 
@@ -80,6 +86,7 @@ void *helper_lookup_ibtc(target_ulong guest_eip)
  */
 void update_ibtc_entry(TranslationBlock *tb)
 {
+    ibtcTable->htable[update_ibtc].tb = tb;
 }
 
 /*
@@ -88,6 +95,8 @@ void update_ibtc_entry(TranslationBlock *tb)
  */
 static inline void ibtc_init(CPUState *env)
 {
+    ibtcTable = malloc(sizeof(struct ibtc_table));
+    memset(ibtcTable, 0, sizeof(ibtcTable));
 }
 
 /*
