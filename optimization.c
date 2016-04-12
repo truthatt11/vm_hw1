@@ -64,6 +64,7 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
  * Indirect Branch Target Cache
  */
 __thread int update_ibtc;
+static target_ulong temp_guest_eip;
 struct ibtc_table *ibtcTable;
 
 /*
@@ -73,9 +74,14 @@ struct ibtc_table *ibtcTable;
  */
 void *helper_lookup_ibtc(target_ulong guest_eip)
 {
-    update_ibtc = guest_eip & IBTC_CACHE_MASK;
-    if(ibtcTable->htable[update_ibtc].guest_eip == guest_eip)
-        return ibtcTable->htable[update_ibtc].tb;
+    int index = guest_eip & IBTC_CACHE_MASK;
+    temp_guest_eip = guest_eip;
+
+    if(ibtcTable->htable[index].guest_eip == guest_eip) {
+        return ibtcTable->htable[index].tb;
+    }else {
+        update_ibtc = 1;
+    }
 
     return optimization_ret_addr;
 }
@@ -86,7 +92,11 @@ void *helper_lookup_ibtc(target_ulong guest_eip)
  */
 void update_ibtc_entry(TranslationBlock *tb)
 {
-    ibtcTable->htable[update_ibtc].tb = tb;
+    int index = temp_guest_eip & IBTC_CACHE_MASK;
+
+    update_ibtc = 0;
+    ibtcTable->htable[index].guest_eip = temp_guest_eip;
+    ibtcTable->htable[index].tb = tb;
 }
 
 /*

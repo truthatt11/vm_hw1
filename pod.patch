@@ -1,0 +1,32 @@
+--- texi2pod.pl	2016-03-17 17:55:21.349827637 +0800
++++ texi2pod-new.pl	2016-03-30 22:41:48.186098519 +0800
+@@ -36,6 +36,7 @@
+ $inf = "";
+ $ibase = "";
+ @ipath = ();
++$encoding = undef;
+ 
+ while ($_ = shift) {
+     if (/^-D(.*)$/) {
+@@ -96,6 +97,12 @@
+     # Look for filename and title markers.
+     /^\@setfilename\s+([^.]+)/ and $fn = $1, next;
+     /^\@settitle\s+([^.]+)/ and $tl = postprocess($1), next;
++	
++	# Look for document encoding
++	/^\@documentencoding\s+([^.]+)/ and do {
++		$encoding = $1 unless defined $encoding;
++		next;
++	};
+ 
+     # Identify a man title but keep only the one we are interested in.
+     /^\@c\s+man\s+title\s+([A-Za-z0-9-]+)\s+(.+)/ and do {
+@@ -336,6 +343,8 @@
+ 
+ die "No filename or title\n" unless defined $fn && defined $tl;
+ 
++print "=encoding $encoding\n\n" if defined $encoding;
++
+ $sects{NAME} = "$fn \- $tl\n";
+ $sects{FOOTNOTES} .= "=back\n" if exists $sects{FOOTNOTES};
+ 
