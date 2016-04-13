@@ -40,6 +40,7 @@ QMP/qmp-commands.txt
 *.log
 *.pdf
 *.pg
+*.swp
 *.toc
 *.tp
 *.vr
