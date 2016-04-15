@@ -91,19 +91,20 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     // Argument list for tcg load/store: value, base, offset
     tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
     tcg_gen_ld_ptr(shack_temp_end, cpu_env, offsetof(CPUState, shack));
-    tcg_gen_ld_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
-    tcg_gen_ld_ptr(shadow_ret, cpu_env, offsetof(CPUState, shadow_ret_addr));
 	
     tcg_gen_brcond_ptr(TCG_COND_NE, shack_temp_top, shack_temp_end, label);  // branch to label if NE
     
     // Skip flushing if stack's not full
-    // TODO ret_addr also need flush
-    tcg_gen_add_ptr(shack_temp_top, shack_temp_end, tcg_const_ptr(sizeof(target_ulong) * (SHACK_SIZE-1)));
+    tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack));
+    tcg_gen_ld_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr));
+    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_ptr(sizeof(target_ulong) * (SHACK_SIZE-1)));
     tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_add_ptr(shadow_ret, shadow_ret_addr_top, tcg_const_ptr(sizeof(unsigned long) * (SHACK_SIZE-1)));
-    tcg_gen_st_ptr(shadow_ret, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
+    tcg_gen_add_ptr(shadow_ret_addr_top, shadow_ret_addr_top, tcg_const_ptr(sizeof(unsigned long) * (SHACK_SIZE-1)));
+    tcg_gen_st_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
  
     gen_set_label(label);
+    tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
+    tcg_gen_ld_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
     tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_ptr(-sizeof(target_ulong)));
     tcg_gen_add_ptr(shadow_ret_addr_top, shadow_ret_addr_top, tcg_const_ptr(-sizeof(unsigned long)));
     // store guest_eip
@@ -112,6 +113,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
     // store host_eip
     tcg_gen_st_ptr(tcg_const_ptr((unsigned long)host_eip), shadow_ret_addr_top, 0);
+    tcg_gen_st_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
 	
     tcg_temp_free_ptr(shack_temp_top);
     tcg_temp_free_ptr(shack_temp_end);
@@ -130,9 +132,9 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     TCGv guest_eip, host_eip;
     int elseLabel;
 
-    shack_top_ptr = tcg_temp_local_new_ptr();
-    shadow_ret_top_ptr = tcg_temp_local_new_ptr();
-    guest_eip = tcg_temp_local_new();
+    shack_top_ptr = tcg_temp_new_ptr();
+    shadow_ret_top_ptr = tcg_temp_new_ptr();
+    guest_eip = tcg_temp_new();
     host_eip = tcg_temp_local_new();
     elseLabel = gen_new_label();
 
@@ -149,13 +151,16 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     */
 
     tcg_gen_ld_ptr(shack_top_ptr, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_ld_ptr(shadow_ret_top_ptr, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
     tcg_gen_ld_tl(guest_eip, shack_top_ptr, 0);
     tcg_gen_brcond_tl(TCG_COND_NE, guest_eip, next_eip, elseLabel);
 
+    tcg_gen_ld_ptr(shadow_ret_top_ptr, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
+    tcg_gen_ld_ptr(shack_top_ptr, cpu_env, offsetof(CPUState, shack_top));
     tcg_gen_ld_tl(host_eip, shadow_ret_top_ptr, 0);
     tcg_gen_add_ptr(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_ptr(sizeof(unsigned long)));
     tcg_gen_add_ptr(shack_top_ptr, shack_top_ptr, tcg_const_ptr(sizeof(target_ulong)));
+    tcg_gen_st_ptr(shadow_ret_top_ptr, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
+    tcg_gen_st_ptr(shack_top_ptr, cpu_env, offsetof(CPUState, shack_top));
     tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(0), elseLabel);
 
 
