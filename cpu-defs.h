@@ -211,11 +211,11 @@ typedef struct CPUWatchpoint {
     struct kvm_run *kvm_run;                                            \
     int kvm_fd;                                                         \
     int kvm_vcpu_dirty;                                                 \
-    uint64_t *shack;                                                    \
-    uint64_t *shack_top;                                                \
-    uint64_t *shack_end;                                                \
+    uint32_t *shack;                                                    \
+    uint32_t *shack_top;                                                \
+    uint32_t *shack_end;                                                \
     void *shadow_hash_list;                                             \
-    int shadow_ret_count;                                               \
-    unsigned long *shadow_ret_addr;
+    target_ulong *shadow_ret_addr;                                      \
+    target_ulong *shadow_ret_addr_top;
 
 #endif

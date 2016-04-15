@@ -18,22 +18,46 @@ extern uint8_t *optimization_ret_addr;
  */
 list_t *shadow_hash_list;
 
+static inline unsigned long** hash_lookup(CPUState* env, target_ulong guest_eip) {
+    int index = guest_eip & (MAX_CALL_SLOT-1);
+    struct shadow_pair* ptr = env->shadow_hash_list[index];
+
+    while(ptr != NULL && ptr->guest_eip != guest_eip) ptr = ptr->next;
+
+    if(ptr) return ptr->shadow_slot;
+    return NULL;
+}
+
+static inline void hash_insert(target_ulong guest_eip, unsigned long* host_eip) {
+    int index = guest_eip & (MAX_CALL_SLOT-1);
+    struct shadow_pair* temp = (struct shadow_pair*) malloc(sizeof(struct shadow_pair));
+    temp->guest_eip = guest_eip;
+    temp->shadow_slot = 0;
+    temp->next = env->shadow_hash_list[index];
+    env->shadow_hash_list[index] = temp;
+}
+
 static inline void shack_init(CPUState *env)
 {
     env->shack = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shadow_ret_addr = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
-    env->shadow_hash_list;
-    env->shadow_ret_addr;
-    env->shack_top = env->shack;
-    env->shack_end = env->shack[SHACK_SIZE-1];
+    env->shadow_hash_list = (struct shadow_pair*) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
+//    env->shadow_ret_addr;
+    env->shack_top = env->shack + SHACK_SIZE -1
+    env->shadow_ret_addr_top = env->shadow_ret_addr + SHACK_SIZE -1;
 }
 
 /*
  * shack_set_shadow()
  *  Insert a guest eip to host eip pair if it is not yet created.
  */
- void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
+void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
+    unsigned long **host = hash_lookup(env, guest_eip);
+    if(host == NULL)
+        hash_insert(guest_eip, host_eip);
+    else
+        *host = host_eip;
 }
 
 /*
@@ -58,6 +82,35 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
  */
 void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
 {
+    TCGv_ptr shack_top_ptr, shack_ret_ptr;
+    TCGv guest_eip, host_eip;
+    int elseLabel;
+
+    shack_top_ptr = tcg_temp_new();
+    shack_ret_ptr = tcg_temp_new();
+    guest_eip = tcg_temp_new();
+    host_eip = tcg_temp_new();
+    elseLabel = gen_new_label();
+
+    /*
+        if(*shack_top == next_eip) {
+            host_eip = shadow_ret_addr(next_eip);
+            if(host_eip != NULL)
+                tcg_gen_...
+        }
+    */
+
+    tcg_gen_ld_ptr(shack_top_ptr, cpu_env, offsetof(CPUState, shack_top));
+    tcg_gen_ld_ptr(shack_ret_ptr, cpu_env, offsetof(CPUState, shack_ret_addr));
+    tcg_gen_ld_tl(guest_eip, shack_top_ptr, 0);
+    tcg_gen_brcond_tl(TCG_COND_NE, guest_eip, next_eip, elseLabel);
+
+    tcg_gen_ld_tl(host_eip, shack_ret_ptr, 0);
+    tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(0), elseLabel);
+    gen_set_label(elseLabel);
+
+    tcg_temp_free(shack_top_ptr);
+    tcg_temp_free(shack_ptr);
 }
 
 /*

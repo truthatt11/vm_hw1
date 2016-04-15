@@ -44,7 +44,7 @@ typedef struct list_head list_t;
 
 struct shadow_pair
 {
-    struct list_head l;
+    struct shadow_pair* next;
     target_ulong guest_eip;
     unsigned long *shadow_slot;
 };
