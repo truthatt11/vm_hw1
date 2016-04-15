@@ -20,7 +20,7 @@ list_t *shadow_hash_list;
 
 static inline unsigned long** hash_lookup(CPUState* env, target_ulong guest_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
-    struct shadow_pair* ptr = env->shadow_hash_list[index];
+    struct shadow_pair* ptr = ((struct shadow_pair**)env->shadow_hash_list)[index];
 
     while(ptr != NULL && ptr->guest_eip != guest_eip) ptr = ptr->next;
 
@@ -28,22 +28,22 @@ static inline unsigned long** hash_lookup(CPUState* env, target_ulong guest_eip)
     return NULL;
 }
 
-static inline void hash_insert(target_ulong guest_eip, unsigned long* host_eip) {
+static inline void hash_insert(CPUState *env, target_ulong guest_eip, unsigned long* host_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
-    struct shadow_pair* temp = (struct shadow_pair*) malloc(sizeof(struct shadow_pair));
+    struct shadow_pair* temp = (struct shadow_pair**) malloc(sizeof(struct shadow_pair));
     temp->guest_eip = guest_eip;
     temp->shadow_slot = 0;
-    temp->next = env->shadow_hash_list[index];
-    env->shadow_hash_list[index] = temp;
+    temp->next = ((struct shadow_pair**)env->shadow_hash_list)[index];
+    ((struct shadow_pair**)env->shadow_hash_list)[index] = temp;
 }
 
 static inline void shack_init(CPUState *env)
 {
-    env->shack = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
-    env->shadow_ret_addr = (uint64_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
+    env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
+    env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(uint64_t));
     env->shadow_hash_list = (struct shadow_pair*) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
 //    env->shadow_ret_addr;
-    env->shack_top = env->shack + SHACK_SIZE -1
+    env->shack_top = env->shack + SHACK_SIZE -1;
     env->shadow_ret_addr_top = env->shadow_ret_addr + SHACK_SIZE -1;
 }
 
@@ -55,7 +55,7 @@ void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host
 {
     unsigned long **host = hash_lookup(env, guest_eip);
     if(host == NULL)
-        hash_insert(guest_eip, host_eip);
+        hash_insert(env, guest_eip, host_eip);
     else
         *host = host_eip;
 }
@@ -82,12 +82,12 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
  */
 void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
 {
-    TCGv_ptr shack_top_ptr, shack_ret_ptr;
+    TCGv_ptr shack_top_ptr, shadow_ret_top_ptr;
     TCGv guest_eip, host_eip;
     int elseLabel;
 
     shack_top_ptr = tcg_temp_new();
-    shack_ret_ptr = tcg_temp_new();
+    shadow_ret_top_ptr = tcg_temp_new();
     guest_eip = tcg_temp_new();
     host_eip = tcg_temp_new();
     elseLabel = gen_new_label();
@@ -95,22 +95,34 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     /*
         if(*shack_top == next_eip) {
             host_eip = shadow_ret_addr(next_eip);
-            if(host_eip != NULL)
+            if(host_eip != NULL) {
+                shack_top++;
+                shadow_ret_addr_top++;
+
                 tcg_gen_...
+            }
         }
     */
 
     tcg_gen_ld_ptr(shack_top_ptr, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_ld_ptr(shack_ret_ptr, cpu_env, offsetof(CPUState, shack_ret_addr));
+    tcg_gen_ld_ptr(shadow_ret_top_ptr, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
     tcg_gen_ld_tl(guest_eip, shack_top_ptr, 0);
     tcg_gen_brcond_tl(TCG_COND_NE, guest_eip, next_eip, elseLabel);
 
-    tcg_gen_ld_tl(host_eip, shack_ret_ptr, 0);
+    tcg_gen_ld_tl(host_eip, shadow_ret_top_ptr, 0);
     tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(0), elseLabel);
+    tcg_gen_add_tl(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_tl(sizeof(uint32_t)));
+    tcg_gen_add_tl(shack_top_ptr, shack_top_ptr, tcg_const_tl(sizeof(target_ulong)));
+
+
+    *gen_opc_ptr++ = INDEX_op_jmp;
+    *gen_opparam_ptr++ = GET_TCGV_I32(host_eip);
     gen_set_label(elseLabel);
 
-    tcg_temp_free(shack_top_ptr);
-    tcg_temp_free(shack_ptr);
+    tcg_temp_free_ptr(shack_top_ptr);
+    tcg_temp_free_ptr(shadow_ret_top_ptr);
+    tcg_temp_free(guest_eip);
+    tcg_temp_free(host_eip);
 }
 
 /*
@@ -159,7 +171,7 @@ void update_ibtc_entry(TranslationBlock *tb)
 static inline void ibtc_init(CPUState *env)
 {
     ibtcTable = malloc(sizeof(struct ibtc_table));
-    memset(ibtcTable, 0, sizeof(ibtcTable));
+    memset(ibtcTable, 0, sizeof(struct ibtc_table));
 }
 
 /*
