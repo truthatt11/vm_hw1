@@ -30,7 +30,7 @@ static inline unsigned long** hash_lookup(CPUState* env, target_ulong guest_eip)
 
 static inline void hash_insert(CPUState *env, target_ulong guest_eip, unsigned long* host_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
-    struct shadow_pair* temp = (struct shadow_pair**) malloc(sizeof(struct shadow_pair));
+    struct shadow_pair* temp = (struct shadow_pair*) malloc(sizeof(struct shadow_pair));
     temp->guest_eip = guest_eip;
     temp->shadow_slot = 0;
     temp->next = ((struct shadow_pair**)env->shadow_hash_list)[index];
@@ -39,8 +39,8 @@ static inline void hash_insert(CPUState *env, target_ulong guest_eip, unsigned l
 
 static inline void shack_init(CPUState *env)
 {
-    env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint64_t));
-    env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(uint64_t));
+    env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint32_t));
+    env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(uint32_t));
     env->shadow_hash_list = (struct shadow_pair*) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
 //    env->shadow_ret_addr;
     env->shack_top = env->shack + SHACK_SIZE -1;
@@ -86,8 +86,8 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     TCGv guest_eip, host_eip;
     int elseLabel;
 
-    shack_top_ptr = tcg_temp_new();
-    shadow_ret_top_ptr = tcg_temp_new();
+    shack_top_ptr = tcg_temp_new_ptr();
+    shadow_ret_top_ptr = tcg_temp_new_ptr();
     guest_eip = tcg_temp_new();
     host_eip = tcg_temp_new();
     elseLabel = gen_new_label();
@@ -111,8 +111,8 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
 
     tcg_gen_ld_tl(host_eip, shadow_ret_top_ptr, 0);
     tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(0), elseLabel);
-    tcg_gen_add_tl(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_tl(sizeof(uint32_t)));
-    tcg_gen_add_tl(shack_top_ptr, shack_top_ptr, tcg_const_tl(sizeof(target_ulong)));
+    tcg_gen_add_ptr(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_ptr(sizeof(uint32_t)));
+    tcg_gen_add_ptr(shack_top_ptr, shack_top_ptr, tcg_const_ptr(sizeof(target_ulong)));
 
 
     *gen_opc_ptr++ = INDEX_op_jmp;
