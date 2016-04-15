@@ -1658,6 +1658,7 @@ static void tcg_reg_alloc_op(TCGContext *s,
                 s->reg_to_temp[reg] = arg;
             }
         }
+//printf("ts->val_type = %d\n", ts->val_type);
         assert(ts->val_type == TEMP_VAL_REG);
         if (arg_ct->ct & TCG_CT_IALIAS) {
             if (ts->fixed_reg) {

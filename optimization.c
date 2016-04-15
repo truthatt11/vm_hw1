@@ -12,14 +12,14 @@
 #include "optimization.h"
 
 extern uint8_t *optimization_ret_addr;
-static unsigned long stk_diff;
+//static unsigned long stk_diff;
 
 /*
  * Shadow Stack
  */
 list_t *shadow_hash_list;
 
-static inline unsigned long** hash_lookup(CPUState* env, target_ulong guest_eip) {
+static inline target_ulong** hash_lookup(CPUState* env, target_ulong guest_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
     struct shadow_pair* ptr = ((struct shadow_pair**)env->shadow_hash_list)[index];
 
@@ -40,12 +40,14 @@ static inline void hash_insert(CPUState *env, target_ulong guest_eip, unsigned l
 
 static inline void shack_init(CPUState *env)
 {
+    printf("target_reg_bit = %d, target_long_bits = %d\n", TCG_TARGET_REG_BITS, TARGET_LONG_BITS);
+    printf("sizeof(target_ulong) = %d, sizeof(unsigned long) = %d\n", sizeof(target_ulong), sizeof(unsigned long));
     env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint32_t));
-    env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(uint32_t));
+    env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(target_ulong));
     env->shadow_hash_list = (struct shadow_pair*) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
     env->shack_top = env->shack + SHACK_SIZE -1;
     env->shadow_ret_addr_top = env->shadow_ret_addr + SHACK_SIZE -1;
-    stk_diff = ((unsigned long)env->shadow_ret_addr) - ((unsigned long)env->shack);
+//    stk_diff = ((unsigned long)env->shadow_ret_addr) - ((unsigned long)env->shack);
 }
 
 /*
@@ -78,30 +80,37 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     /* Use TCG APIs(defind in tcg/tcg-op.h & tcg/tcg.c) to generate guest machine code 
        The arguments can only be of type TCGv or TCGv_ptr
     */
-    TCGv_ptr shack_temp_top = tcg_temp_new_ptr(), shack_temp_end = tcg_temp_new_ptr();
+
+    TCGv_ptr shack_temp_top = tcg_temp_local_new_ptr(), shack_temp_end = tcg_temp_local_new_ptr();
+    TCGv_ptr shadow_ret_addr_top = tcg_temp_local_new_ptr();
+
     int label = gen_new_label(); 
     unsigned long **host_eip = hash_lookup(env, next_eip);
+    if(host_eip == NULL) hash_insert(env, next_eip, NULL);
     // Argument list for tcg load/store: value, base, offset
     tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
-    tcg_gen_ld_ptr(shack_temp_end, cpu_env, offsetof(CPUState, shack_end));
+    tcg_gen_ld_ptr(shack_temp_end, cpu_env, offsetof(CPUState, shack));
+    tcg_gen_ld_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
 	
     tcg_gen_brcond_ptr(TCG_COND_NE, shack_temp_top, shack_temp_end, label);  // branch to label if NE
     
-
-    // Skip flushing if stack's not full	
-    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_tl(sizeof(uint32_t) * (SHACK_SIZE-1)));
+    // Skip flushing if stack's not full
+    tcg_gen_add_ptr(shack_temp_top, shack_temp_end, tcg_const_ptr(sizeof(uint32_t) * (SHACK_SIZE-1)));
+    tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
  
-    gen_set_label(label);  
-    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_tl(-sizeof(uint32_t)));
+    gen_set_label(label);
+    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_ptr(-sizeof(uint32_t)));
+    tcg_gen_add_ptr(shadow_ret_addr_top, shadow_ret_addr_top, tcg_const_ptr(-sizeof(target_ulong)));
     // store guest_eip
     tcg_gen_st_ptr(tcg_const_ptr(next_eip), shack_temp_top, 0);
 
     tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
     // store host_eip
-    tcg_gen_st_ptr(tcg_const_ptr((unsigned long)host_eip), shack_temp_top, stk_diff);
+    tcg_gen_st_ptr(tcg_const_ptr((unsigned long)host_eip), shadow_ret_addr_top, 0);
 	
-    tcg_temp_free(shack_temp_top);
-    tcg_temp_free(shack_temp_end);
+    tcg_temp_free_ptr(shack_temp_top);
+    tcg_temp_free_ptr(shack_temp_end);
+    tcg_temp_free_ptr(shadow_ret_addr_top);
 
 }
 
@@ -115,10 +124,10 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     TCGv guest_eip, host_eip;
     int elseLabel;
 
-    shack_top_ptr = tcg_temp_new_ptr();
-    shadow_ret_top_ptr = tcg_temp_new_ptr();
-    guest_eip = tcg_temp_new();
-    host_eip = tcg_temp_new();
+    shack_top_ptr = tcg_temp_local_new_ptr();
+    shadow_ret_top_ptr = tcg_temp_local_new_ptr();
+    guest_eip = tcg_temp_local_new();
+    host_eip = tcg_temp_local_new();
     elseLabel = gen_new_label();
 
     /*
@@ -140,8 +149,8 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
 
     tcg_gen_ld_tl(host_eip, shadow_ret_top_ptr, 0);
     tcg_gen_brcond_tl(TCG_COND_EQ, host_eip, tcg_const_tl(0), elseLabel);
-    tcg_gen_add_ptr(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_ptr(sizeof(uint32_t)));
-    tcg_gen_add_ptr(shack_top_ptr, shack_top_ptr, tcg_const_ptr(sizeof(target_ulong)));
+    tcg_gen_add_ptr(shadow_ret_top_ptr, shadow_ret_top_ptr, tcg_const_ptr(sizeof(target_ulong)));
+    tcg_gen_add_ptr(shack_top_ptr, shack_top_ptr, tcg_const_ptr(sizeof(uint32_t)));
 
 
     *gen_opc_ptr++ = INDEX_op_jmp;
@@ -152,6 +161,7 @@ void pop_shack(TCGv_ptr cpu_env, TCGv next_eip)
     tcg_temp_free_ptr(shadow_ret_top_ptr);
     tcg_temp_free(guest_eip);
     tcg_temp_free(host_eip);
+
 }
 
 /*
