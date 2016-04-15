@@ -12,6 +12,7 @@
 #include "optimization.h"
 
 extern uint8_t *optimization_ret_addr;
+static unsigned long stk_diff;
 
 /*
  * Shadow Stack
@@ -42,9 +43,9 @@ static inline void shack_init(CPUState *env)
     env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint32_t));
     env->shadow_ret_addr = (target_ulong*) malloc(SHACK_SIZE * sizeof(uint32_t));
     env->shadow_hash_list = (struct shadow_pair*) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
-//    env->shadow_ret_addr;
     env->shack_top = env->shack + SHACK_SIZE -1;
     env->shadow_ret_addr_top = env->shadow_ret_addr + SHACK_SIZE -1;
+    stk_diff = ((unsigned long)env->shadow_ret_addr) - ((unsigned long)env->shack);
 }
 
 /*
@@ -74,6 +75,34 @@ void helper_shack_flush(CPUState *env)
  */
 void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
 {
+    /* Use TCG APIs(defind in tcg/tcg-op.h & tcg/tcg.c) to generate guest machine code 
+       The arguments can only be of type TCGv or TCGv_ptr
+    */
+    TCGv_ptr shack_temp_top = tcg_temp_new_ptr(), shack_temp_end = tcg_temp_new_ptr();
+    int label = gen_new_label(); 
+    unsigned long **host_eip = hash_lookup(env, next_eip);
+    // Argument list for tcg load/store: value, base, offset
+    tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
+    tcg_gen_ld_ptr(shack_temp_end, cpu_env, offsetof(CPUState, shack_end));
+	
+    tcg_gen_brcond_ptr(TCG_COND_NE, shack_temp_top, shack_temp_end, label);  // branch to label if NE
+    
+
+    // Skip flushing if stack's not full	
+    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_tl(sizeof(uint32_t) * (SHACK_SIZE-1)));
+ 
+    gen_set_label(label);  
+    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_tl(-sizeof(uint32_t)));
+    // store guest_eip
+    tcg_gen_st_ptr(tcg_const_ptr(next_eip), shack_temp_top, 0);
+
+    tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
+    // store host_eip
+    tcg_gen_st_ptr(tcg_const_ptr((unsigned long)host_eip), shack_temp_top, stk_diff);
+	
+    tcg_temp_free(shack_temp_top);
+    tcg_temp_free(shack_temp_end);
+
 }
 
 /*
