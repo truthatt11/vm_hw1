@@ -12,12 +12,28 @@
 #include "optimization.h"
 
 extern uint8_t *optimization_ret_addr;
+/*
+static int slot_num;
+static unsigned long** slots;
+*/
 
 /*
  * Shadow Stack
  */
 struct shadow_pair **shadow_hash_list;
 
+/*
+static inline void new_slot() {
+    slots = malloc(MAX_CALL_SLOT*sizeof(unsigned long*));
+    slot_num = -1;
+}
+
+static inline unsigned long* place_slot() {
+    if(slot_num == MAX_CALL_SLOT-1) new_slot();
+    slot_num++;
+    return slots+slot_num;
+}
+*/
 
 static inline unsigned long** hash_lookup(target_ulong guest_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
@@ -29,26 +45,35 @@ static inline unsigned long** hash_lookup(target_ulong guest_eip) {
     return NULL;
 }
 
-static inline void hash_insert(target_ulong guest_eip, unsigned long* host_eip) {
+static inline unsigned long** hash_insert(target_ulong guest_eip, unsigned long* host_eip) {
     int index = guest_eip & (MAX_CALL_SLOT-1);
     struct shadow_pair* temp = (struct shadow_pair*) malloc(sizeof(struct shadow_pair));
 
+    printf("(insert) guest_eip = %u, index = %d, host_eip = %p\n", guest_eip, index, host_eip);
+
     temp->guest_eip = guest_eip;
-    temp->shadow_slot = 0;
+//    temp->shadow_slot = place_slot();
+    temp->shadow_slot = host_eip;
     temp->next = shadow_hash_list[index];
     shadow_hash_list[index] = temp;
+
+    return temp->shadow_slot;
 }
 
 static inline void shack_init(CPUState *env)
 {
     printf("target_reg_bit = %d, target_long_bits = %d\n", TCG_TARGET_REG_BITS, TARGET_LONG_BITS);
-    printf("sizeof(target_ulong) = %d, sizeof(unsigned long) = %d\n", sizeof(target_ulong), sizeof(unsigned long));
+    printf("sizeof(target_ulong) = %d, sizeof(unsigned long*) = %d\n", sizeof(target_ulong), sizeof(unsigned long*));
 
-    env->shack = (uint32_t*) malloc(SHACK_SIZE * sizeof(uint32_t));
+    env->shack = (target_ulong*) malloc(SHACK_SIZE * sizeof(target_ulong));
     env->shadow_ret_addr = (unsigned long*) malloc(SHACK_SIZE * sizeof(unsigned long));
-    shadow_hash_list = (struct shadow_pair**) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair));
+    shadow_hash_list = (struct shadow_pair**) malloc(MAX_CALL_SLOT * sizeof(struct shadow_pair*));
+    memset(shadow_hash_list, 0, sizeof(MAX_CALL_SLOT*sizeof(struct shadow_pair*)));
+
     env->shack_top = env->shack + SHACK_SIZE -1;
     env->shadow_ret_addr_top = env->shadow_ret_addr + SHACK_SIZE -1;
+
+//    new_slot();
 }
 
 /*
@@ -58,10 +83,11 @@ static inline void shack_init(CPUState *env)
 void shack_set_shadow(CPUState *env, target_ulong guest_eip, unsigned long *host_eip)
 {
     unsigned long **host = hash_lookup(guest_eip);
-    if(host == NULL)
-        hash_insert(guest_eip, host_eip);
-    else
+    printf("(set) guest_eip = %u, host_eip = %p\n", guest_eip, host_eip);
+    if(host != NULL)
         *host = host_eip;
+    else
+        hash_insert(guest_eip, host_eip);
 }
 
 /*
@@ -87,7 +113,7 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
 
     int label = gen_new_label(); 
     unsigned long **host_eip = hash_lookup(next_eip);
-    if(host_eip == NULL) hash_insert(next_eip, NULL);
+    if(host_eip == NULL) host_eip = hash_insert(next_eip, NULL);
     // Argument list for tcg load/store: value, base, offset
     tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
     tcg_gen_ld_ptr(shack_temp_end, cpu_env, offsetof(CPUState, shack));
@@ -95,12 +121,12 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     tcg_gen_brcond_ptr(TCG_COND_NE, shack_temp_top, shack_temp_end, label);  // branch to label if NE
     
     // Skip flushing if stack's not full
-    tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack));
-    tcg_gen_ld_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr));
-    tcg_gen_add_ptr(shack_temp_top, shack_temp_top, tcg_const_ptr(sizeof(target_ulong) * (SHACK_SIZE-1)));
-    tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
+    tcg_gen_ld_ptr (shack_temp_top     , cpu_env, offsetof(CPUState, shack));
+    tcg_gen_ld_ptr (shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr));
+    tcg_gen_add_ptr(shack_temp_top     , shack_temp_top, tcg_const_ptr(sizeof(target_ulong) * (SHACK_SIZE-1)));
+    tcg_gen_st_ptr (shack_temp_top     , cpu_env, offsetof(CPUState, shack_top));
     tcg_gen_add_ptr(shadow_ret_addr_top, shadow_ret_addr_top, tcg_const_ptr(sizeof(unsigned long) * (SHACK_SIZE-1)));
-    tcg_gen_st_ptr(shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
+    tcg_gen_st_ptr (shadow_ret_addr_top, cpu_env, offsetof(CPUState, shadow_ret_addr_top));
  
     gen_set_label(label);
     tcg_gen_ld_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
@@ -109,7 +135,6 @@ void push_shack(CPUState *env, TCGv_ptr cpu_env, target_ulong next_eip)
     tcg_gen_add_ptr(shadow_ret_addr_top, shadow_ret_addr_top, tcg_const_ptr(-sizeof(unsigned long)));
     // store guest_eip
     tcg_gen_st_ptr(tcg_const_ptr(next_eip), shack_temp_top, 0);
-
     tcg_gen_st_ptr(shack_temp_top, cpu_env, offsetof(CPUState, shack_top));
     // store host_eip
     tcg_gen_st_ptr(tcg_const_ptr((unsigned long)host_eip), shadow_ret_addr_top, 0);
